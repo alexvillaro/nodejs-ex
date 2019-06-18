@@ -1,125 +1,154 @@
-//  OpenShift sample Node application
-var express = require('express'),
-    app     = express(),
-    morgan  = require('morgan');
-    
-Object.assign=require('object-assign')
+var port = 80;
 
-app.engine('html', require('ejs').renderFile);
-app.use(morgan('combined'))
+console.log('Klar');
+var express = require('express');
+var app = express();
+var http = require('http').Server(app);
+var io = require('socket.io')(http);
 
-var port = process.env.PORT || process.env.OPENSHIFT_NODEJS_PORT || 8080,
-    ip   = process.env.IP   || process.env.OPENSHIFT_NODEJS_IP || '0.0.0.0',
-    mongoURL = process.env.OPENSHIFT_MONGODB_DB_URL || process.env.MONGO_URL,
-    mongoURLLabel = "";
+var roomMembers = {
 
-if (mongoURL == null) {
-  var mongoHost, mongoPort, mongoDatabase, mongoPassword, mongoUser;
-  // If using plane old env vars via service discovery
-  if (process.env.DATABASE_SERVICE_NAME) {
-    var mongoServiceName = process.env.DATABASE_SERVICE_NAME.toUpperCase();
-    mongoHost = process.env[mongoServiceName + '_SERVICE_HOST'];
-    mongoPort = process.env[mongoServiceName + '_SERVICE_PORT'];
-    mongoDatabase = process.env[mongoServiceName + '_DATABASE'];
-    mongoPassword = process.env[mongoServiceName + '_PASSWORD'];
-    mongoUser = process.env[mongoServiceName + '_USER'];
-
-  // If using env vars from secret from service binding  
-  } else if (process.env.database_name) {
-    mongoDatabase = process.env.database_name;
-    mongoPassword = process.env.password;
-    mongoUser = process.env.username;
-    var mongoUriParts = process.env.uri && process.env.uri.split("//");
-    if (mongoUriParts.length == 2) {
-      mongoUriParts = mongoUriParts[1].split(":");
-      if (mongoUriParts && mongoUriParts.length == 2) {
-        mongoHost = mongoUriParts[0];
-        mongoPort = mongoUriParts[1];
-      }
-    }
-  }
-
-  if (mongoHost && mongoPort && mongoDatabase) {
-    mongoURLLabel = mongoURL = 'mongodb://';
-    if (mongoUser && mongoPassword) {
-      mongoURL += mongoUser + ':' + mongoPassword + '@';
-    }
-    // Provide UI label that excludes user id and pw
-    mongoURLLabel += mongoHost + ':' + mongoPort + '/' + mongoDatabase;
-    mongoURL += mongoHost + ':' +  mongoPort + '/' + mongoDatabase;
-  }
-}
-var db = null,
-    dbDetails = new Object();
-
-var initDb = function(callback) {
-  if (mongoURL == null) return;
-
-  var mongodb = require('mongodb');
-  if (mongodb == null) return;
-
-  mongodb.connect(mongoURL, function(err, conn) {
-    if (err) {
-      callback(err);
-      return;
-    }
-
-    db = conn;
-    dbDetails.databaseName = db.databaseName;
-    dbDetails.url = mongoURLLabel;
-    dbDetails.type = 'MongoDB';
-
-    console.log('Connected to MongoDB at: %s', mongoURL);
-  });
 };
 
 app.get('/', function (req, res) {
-  // try to initialize the db on every request if it's not already
-  // initialized.
-  if (!db) {
-    initDb(function(err){});
-  }
-  if (db) {
-    var col = db.collection('counts');
-    // Create a document with request IP and current time of request
-    col.insert({ip: req.ip, date: Date.now()});
-    col.count(function(err, count){
-      if (err) {
-        console.log('Error running count. Message:\n'+err);
-      }
-      res.render('index.html', { pageCountMessage : count, dbInfo: dbDetails });
+    res.send('Denne IP-adresse er dedikeret som MATADORâ„¢ server');
+});
+
+io.sockets.on('connection', function (socket) {
+    console.log('+');
+    var room = false;
+    var nr = false;
+    var starter = false;
+    var i;
+    var j;
+    var connectionsRequired = 0;
+
+    socket.emit('connected');
+
+    socket.on('disconnect', function () {
+        console.log('-');
+        socket.broadcast.to(room).emit('leaved', nr, starter);
+        if (room !== false) {
+            roomMembers[room] -= 1;
+            if (roomMembers[room] <= 0 || isNaN(roomMembers[room])) {
+                delete roomMembers[room];
+            }
+        }
     });
-  } else {
-    res.render('index.html', { pageCountMessage : null});
-  }
-});
 
-app.get('/pagecount', function (req, res) {
-  // try to initialize the db on every request if it's not already
-  // initialized.
-  if (!db) {
-    initDb(function(err){});
-  }
-  if (db) {
-    db.collection('counts').count(function(err, count ){
-      res.send('{ pageCount: ' + count + '}');
+    socket.on('joinRoom', function (roomname, starterData, nrData) {
+        if (room) {
+            if (roomMembers[room]) {
+                roomMembers[room] -= 1;
+            }
+        }
+        if (!!nrData) {
+            socket.join(roomname);
+            room = roomname;
+            if (roomMembers[room]) {
+                roomMembers[room] += 1;
+            } else {
+                roomMembers[room] = 1;
+            }
+            nr = nrData;
+            if (starterData) {
+                starter = true;
+                socket.emit('joinConfirm', true);
+                socket.to(room + 'waitinglist').emit('joinNow');
+            } else {
+                if (roomMembers[roomname] > 0) {
+                    socket.broadcast.to(room).emit('joined', nr);
+                    socket.emit('joinConfirm', true);
+                } else {
+                    socket.join(roomname + 'waitinglist');
+                    socket.emit('joinConfirm', false);
+                }
+            }
+        } else {
+            socket.join(roomname);
+            room = roomname;
+            if (roomMembers[room]) {
+                roomMembers[room] += 1;
+            } else {
+                roomMembers[room] = 1;
+            }
+            if (starterData) {
+                starter = true;
+            }
+            socket.emit('joinConfirm', true);
+            if (nrData) {
+                nr = nrData;
+                socket.broadcast.to(room).emit('joined', nr);
+            }
+        }
     });
-  } else {
-    res.send('{ pageCount: -1 }');
-  }
+
+    socket.on('updateCurrentConnections', function (a, b, c) {
+        socket.broadcast.to(room).emit('updateCurrentConnections', a, b, c);
+    });
+
+    socket.on('groupMessage', function (data) {
+        socket.broadcast.to(room).emit('groupMessage', data);
+    });
+
+    socket.on('join', function (data) {
+        if (roomMembers[data]) {
+            socket.emit('joinCheckConfirm', true);
+        } else {
+            socket.emit('joinCheckConfirm', false);
+        }
+    });
+    socket.on('getData', function () {
+        socket.broadcast.to(room).emit('getData');
+    });
+    socket.on('sendData', function (data, gameReadyData) {
+        var gameReady = false;
+        if (gameReadyData) {
+            gameReady = true;
+        }
+        socket.broadcast.to(room).emit('sendData', data, gameReady);
+    });
+    socket.on('ledigt', function (data) {
+        if (roomMembers[data]) {
+            socket.emit('ledigtConfirm', false);
+        } else {
+            socket.emit('ledigtConfirm', true);
+        }
+    });
+    socket.on('cancel', function () {
+        socket.broadcast.to(room).emit('cancel');
+    });
+    socket.on('bilvis', function (data) {
+        nr = data;
+        socket.broadcast.to(room).emit('bilvis', data);
+    });
+    socket.on('uncheck', function (data) {
+        socket.broadcast.to(room).emit('uncheck', data);
+    });
+    socket.on('check', function (data) {
+        nr = data;
+        socket.broadcast.to(room).emit('check', data);
+    });
+    socket.on('confirm', function (data) {
+        starter = false;
+        delete roomMembers[room];
+        socket.broadcast.to(room).emit('confirm', data);
+        socket.emit('confirmCallback');
+    });
+
+    socket.on('reload', function () {
+        socket.broadcast.to(room).emit('reload');
+    });
 });
 
-// error handling
-app.use(function(err, req, res, next){
-  console.error(err.stack);
-  res.status(500).send('Something bad happened!');
+setInterval(function () {
+    console.log(roomMembers);
+}, 1000);
+
+http.listen(port, function () {
+    console.log('Server startet pÃ¥ port ' + port);
 });
 
-initDb(function(err){
-  console.log('Error connecting to Mongo. Message:\n'+err);
-});
-
-app.listen(port, ip);
-console.log('Server running on http://%s:%s', ip, port);
-
-module.exports = app ;
+/*
+Denne fil er udviklet, vedligeholdt og ejet af Alex Villaro KrÃ¼ger
+*/
